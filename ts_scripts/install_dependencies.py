@@ -1,8 +1,14 @@
 import argparse
 import os
 import platform
+import shutil
+import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.request
 
+from contextlib import contextmanager
 from print_env_info import run_and_parse_first_match
 
 REPO_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -14,7 +20,7 @@ from ts_scripts.utils import check_python_version
 class Common:
     def __init__(self):
         self.torch_stable_url = "https://download.pytorch.org/whl/torch_stable.html"
-        self.sudo_cmd = "sudo "
+        self.sudo_cmd = "sudo"
 
     def install_java(self):
         pass
@@ -35,37 +41,36 @@ class Common:
                 )
                 sys.exit(1)
             else:
-                os.system(
-                    f"{sys.executable} -m pip install -U -r requirements/torch_{cuda_version}_{platform.system().lower()}.txt"
+                subprocess.check_call(
+                    [f"{sys.executable}", "-m", "pip", "install", "-U", "-r", f"requirements/torch_{cuda_version}_{platform.system().lower()}.txt"]
                 )
         else:
-            os.system(
-                f"{sys.executable} -m pip install -U -r requirements/torch_{platform.system().lower()}.txt"
+            subprocess.check_call(
+                [f"{sys.executable}", "-m", "pip", "install", "-U", "-r", f"requirements/torch_{platform.system().lower()}.txt"]
             )
 
     def install_python_packages(self, cuda_version, requirements_file_path, nightly):
-        check = "where" if platform.system() == "Windows" else "which"
-        if os.system(f"{check} conda") == 0:
+        if shutil.which("conda"):
             # conda install command should run before the pip install commands
             # as it may reinstall the packages with different versions
-            os.system("conda install -y conda-build")
+            subprocess.check_call(["conda", "install", "-y", "conda-build"])
 
         self.install_torch_packages(cuda_version)
-        os.system(f"{sys.executable} -m pip install -U pip setuptools")
+        subprocess.check_call([f"{sys.executable}", "-m", "pip", "install", "-U", "pip", "setuptools"])
         # developer.txt also installs packages from common.txt
-        os.system(f"{sys.executable} -m pip install -U -r {requirements_file_path}")
+        subprocess.check_call([f"{sys.executable}", "-m", "pip", "install", "-U", "-r", f"{requirements_file_path}"])
         # If conda is available install conda-build package
 
         # TODO: This will run 2 installations for torch but to make this cleaner we should first refactor all of our requirements.txt into just 2 files
         # And then make torch an optional dependency for the common.txt
         if nightly:
-            os.system(
-                f"pip3 install numpy --pre torch[dynamo] torchvision torchtext torchaudio --force-reinstall --extra-index-url https://download.pytorch.org/whl/nightly/{cuda_version}"
+            subprocess.check_call(
+                [f"{sys.executable}", "-m", "pip", "install", "numpy", "--pre torch[dynamo]", "torchvision", "torchtext", "torchaudio", "--force-reinstall", "--extra-index-url", f"https://download.pytorch.org/whl/nightly/{cuda_version}"]
             )
 
     def install_node_packages(self):
-        os.system(
-            f"{self.sudo_cmd}npm install -g newman newman-reporter-htmlextra markdown-link-check"
+        subprocess.check_call(
+            list(filter(None, [f"{self.sudo_cmd}", "npm", "install", "-g", "newman", "newman-reporter-htmlextra", "markdown-link-check"]))
         )
 
     def install_jmeter(self):
@@ -73,6 +78,15 @@ class Common:
 
     def install_wget(self):
         pass
+
+    @contextmanager
+    def cd(self, newdir):
+        prevdir = os.getcwd()
+        os.chdir(os.path.expanduser(newdir))
+        try:
+            yield
+        finally:
+            os.chdir(prevdir)
 
 
 class Linux(Common):
@@ -82,30 +96,37 @@ class Linux(Common):
         self.sudo_cmd = "" if os.geteuid() == 0 else self.sudo_cmd
 
         if args.force:
-            os.system(f"{self.sudo_cmd}apt-get update")
+            subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "apt-get", "update"])))
 
     def install_java(self):
-        if os.system("javac --version") != 0 or args.force:
-            os.system(f"{self.sudo_cmd}apt-get install -y openjdk-17-jdk")
+        if not shutil.which("javac") or args.force:
+            subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "apt-get", "install", "-y", "openjdk-17-jdk"])))
 
     def install_nodejs(self):
-        if os.system("node -v") != 0 or args.force:
-            os.system(
-                f"{self.sudo_cmd}curl -sL https://deb.nodesource.com/setup_14.x | {self.sudo_cmd}bash -"
-            )
-            os.system(f"{self.sudo_cmd}apt-get install -y nodejs")
+        if not shutil.which("node") or args.force:
+            with urllib.request.urlopen('https://deb.nodesource.com/setup_14.x') as response, tempfile.NamedTemporaryFile() as tmp_file:
+                data = response.read()
+                tmp_file.write(data)
+                subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "bash", tmp_file.name])))
+            subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "apt-get", "install", "-y", "nodejs"])))
 
     def install_wget(self):
-        if os.system("wget --version") != 0 or args.force:
-            os.system(f"{self.sudo_cmd}apt-get install -y wget")
+        if not shutil.which("wget") or args.force:
+            subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "apt-get", "install", "-y", "wget"])))
 
     def install_libgit2(self):
-        os.system(
-            f"wget https://github.com/libgit2/libgit2/archive/refs/tags/v1.3.0.tar.gz -O libgit2-1.3.0.tar.gz"
-        )
-        os.system(f"tar xzf libgit2-1.3.0.tar.gz")
-        os.system(f"cd libgit2-1.3.0 && cmake . && make && sudo make install && cd ..")
-        os.system(f"rm -rf libgit2-1.3.0 && rm libgit2-1.3.0.tar.gz")
+        version = "1.3.0"
+        dirname = f"libgit2-{version}"
+        tarballname = f"{dirname}.tar.gz"
+        subprocess.check_call(["wget", f"https://github.com/libgit2/libgit2/archive/refs/tags/v{version}.tar.gz", "-O", tarballname])
+        with tarfile.open(tarballname,"r:gz") as f:
+            f.extractall()
+        with self.cd(dirname):
+            subprocess.check_call(["cmake", "."])
+            subprocess.check_call(["make"])
+            subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "make", "install"])))
+        shutil.rmtree(dirname)
+        os.remove(tarballname)
 
 
 class Windows(Common):
@@ -128,23 +149,23 @@ class Darwin(Common):
         super().__init__()
 
     def install_java(self):
-        if os.system("javac -version") != 0 or args.force:
+        if not shutil.which("javac") or args.force:
             out = get_brew_version()
             if out == "N/A":
                 sys.exit("**Error: Homebrew not installed...")
-            os.system("brew install openjdk@17")
+            subprocess.check_call(["brew", "install", "openjdk@17"])
 
     def install_nodejs(self):
-        os.system("brew unlink node")
-        os.system("brew install node@14")
-        os.system("brew link --overwrite node@14")
+        subprocess.check_call(["brew", "unlink", "node"])
+        subprocess.check_call(["brew", "install", "node@14"])
+        subprocess.check_call(["brew", "link", "--overwrite", "node@14"])
 
     def install_node_packages(self):
-        os.system(f"{self.sudo_cmd} ./ts_scripts/mac_npm_deps")
+        subprocess.check_call(list(filter(None, [f"{self.sudo_cmd}", "./ts_scripts/mac_npm_deps"])))
 
     def install_wget(self):
-        if os.system("wget --version") != 0 or args.force:
-            os.system("brew install wget")
+        if not shutil.which("wget") or args.force:
+            subprocess.check_call(["brew", "install", "wget"])
 
 
 def install_dependencies(cuda_version=None, nightly=False):
