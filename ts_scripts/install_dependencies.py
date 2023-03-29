@@ -23,7 +23,10 @@ class Common:
         self.sudo_cmd = "sudo"
 
     def check_for_jdk(self):
-        pass
+        if not shutil.which("javac"):
+            sys.exit(
+                "javac not found on PATH. Please install JDK 17 appropriate for your operating system."
+            )
 
     def install_nodejs(self):
         pass
@@ -154,12 +157,6 @@ class Linux(Common):
                 list(filter(None, [f"{self.sudo_cmd}", "apt-get", "update"]))
             )
 
-    def check_for_jdk(self):
-        if not shutil.which("javac") or args.force:
-            sys.exit(
-                "javac not found on PATH. Please install JDK 17 appropriate for your operating system."
-            )
-
     def install_nodejs(self):
         if not shutil.which("node") or args.force:
             with urllib.request.urlopen(
@@ -217,9 +214,6 @@ class Windows(Common):
         super().__init__()
         self.sudo_cmd = ""
 
-    def check_for_jdk(self):
-        pass
-
     def install_nodejs(self):
         pass
 
@@ -230,13 +224,6 @@ class Windows(Common):
 class Darwin(Common):
     def __init__(self):
         super().__init__()
-
-    def check_for_jdk(self):
-        if not shutil.which("javac") or args.force:
-            out = get_brew_version()
-            if out == "N/A":
-                sys.exit("**Error: Homebrew not installed...")
-            subprocess.check_call(["brew", "install", "openjdk@17"])
 
     def install_nodejs(self):
         subprocess.check_call(["brew", "unlink", "node"])
